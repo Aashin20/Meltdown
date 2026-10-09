@@ -24,6 +24,11 @@ const productInfoStatus = ref('')
 const form = ref(null)
 const tab = ref('overview')
 
+// generate from paragraph
+const generateOpen = ref(false)
+const generateLoading = ref(false)
+const paragraph = ref('')
+
 let ws = null
 let hideTimer = 0
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
@@ -153,16 +158,14 @@ const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'features', label: 'Features' },
   { id: 'pricing', label: 'Pricing' },
-  { id: 'integrations', label: 'Integrations' },
-  { id: 'rollout', label: 'Rollout' },
-  { id: 'faq', label: 'FAQ' },
+  { id: 'setup', label: 'Setup' },
   { id: 'more', label: 'More' },
 ]
 
 // string-list fields, grouped by the tab they appear in
 const LISTS = {
   overview: [
-    { key: 'target_customers', label: 'Target customers', add: 'Add customer type' },
+    { key: 'target_customers', label: 'Target customers', add: 'Add customer' },
     { key: 'use_cases', label: 'Use cases', add: 'Add use case' },
   ],
   more: [
@@ -171,23 +174,32 @@ const LISTS = {
   ],
 }
 
+function stripVerificationFields(value) {
+  if (Array.isArray(value)) return value.map(stripVerificationFields)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'verified' && key !== 'last_verified')
+      .map(([key, child]) => [key, stripVerificationFields(child)]),
+  )
+}
+
 function normalize(data) {
-  const d = { ...data }
+  const d = stripVerificationFields(data)
   d.name ??= ''
   d.description ??= ''
   d.target_customers ??= []
   d.features ??= []
   d.use_cases ??= []
-  d.pricing = { currency: 'USD', plans: [], discount_policy: '', verified: false, ...(d.pricing || {}) }
+  d.pricing = { currency: 'USD', plans: [], discount_policy: '', ...(d.pricing || {}) }
   d.pricing.plans ??= []
   d.integrations ??= []
-  d.implementation = { process: '', timeline: '', verified: false, ...(d.implementation || {}) }
+  d.implementation = { process: '', timeline: '', ...(d.implementation || {}) }
   d.security ??= []
   d.limitations ??= []
   d.faq ??= []
   d.competitors ??= []
   d.evidence ??= []
-  d.last_verified ??= ''
   return d
 }
 
@@ -201,16 +213,17 @@ function removeAt(list, i) { list.splice(i, 1) }
 
 function cleanPayload() {
   const d = JSON.parse(JSON.stringify(form.value))
+  const clean = stripVerificationFields(d)
   const strings = (a) => a.map((s) => (typeof s === 'string' ? s.trim() : s)).filter((s) => s !== '')
-  for (const k of ['target_customers', 'use_cases', 'security', 'limitations']) d[k] = strings(d[k])
-  if (d.competitors.every((c) => typeof c === 'string')) d.competitors = strings(d.competitors)
-  d.features = d.features.filter((f) => f.name?.trim())
-  d.integrations = d.integrations.filter((f) => f.name?.trim())
-  d.faq = d.faq.filter((f) => f.question?.trim())
-  d.pricing.plans = d.pricing.plans
+  for (const k of ['target_customers', 'use_cases', 'security', 'limitations']) clean[k] = strings(clean[k])
+  if (clean.competitors.every((c) => typeof c === 'string')) clean.competitors = strings(clean.competitors)
+  clean.features = clean.features.filter((f) => f.name?.trim())
+  clean.integrations = clean.integrations.filter((f) => f.name?.trim())
+  clean.faq = clean.faq.filter((f) => f.question?.trim())
+  clean.pricing.plans = clean.pricing.plans
     .filter((p) => p.name?.trim())
     .map((p) => ({ ...p, price_per_user_per_month: Number(p.price_per_user_per_month) || 0 }))
-  return d
+  return clean
 }
 
 async function openProductInfoEditor() {
@@ -219,6 +232,9 @@ async function openProductInfoEditor() {
   productInfoSaving.value = false
   productInfoError.value = ''
   productInfoStatus.value = ''
+  generateOpen.value = false
+  generateLoading.value = false
+  paragraph.value = ''
   tab.value = 'overview'
   form.value = null
 
@@ -234,7 +250,7 @@ async function openProductInfoEditor() {
 }
 
 function closeProductInfoEditor() {
-  if (productInfoSaving.value) return
+  if (productInfoSaving.value || generateLoading.value) return
   productInfoOpen.value = false
   productInfoError.value = ''
   productInfoStatus.value = ''
@@ -245,6 +261,7 @@ async function saveProductInfo() {
   if (!form.value.name.trim()) {
     productInfoError.value = 'Add a product name before saving.'
     productInfoStatus.value = ''
+    generateOpen.value = false
     tab.value = 'overview'
     return
   }
@@ -268,6 +285,45 @@ async function saveProductInfo() {
     productInfoError.value = error instanceof Error ? error.message : 'Unable to save product info.'
   } finally {
     productInfoSaving.value = false
+  }
+}
+
+function toggleGenerate() {
+  if (generateLoading.value) return
+  generateOpen.value = !generateOpen.value
+  productInfoError.value = ''
+  productInfoStatus.value = ''
+}
+
+async function generateProductInfo() {
+  const text = paragraph.value.trim()
+  if (!text) return
+
+  generateLoading.value = true
+  productInfoError.value = ''
+  productInfoStatus.value = ''
+  try {
+    const response = await fetch(`${apiBaseUrl}/product-info/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paragraph: text }),
+    })
+    if (!response.ok) {
+      // FastAPI's HTTPException returns { "detail": "..." }
+      const raw = await response.text()
+      let detail = raw
+      try { detail = JSON.parse(raw).detail || raw } catch { /* not JSON */ }
+      throw new Error(detail || `Unable to generate product info (${response.status}).`)
+    }
+    form.value = normalize(await response.json())
+    tab.value = 'overview'
+    generateOpen.value = false
+    paragraph.value = ''
+    productInfoStatus.value = 'Generated. Review, then Save.'
+  } catch (error) {
+    productInfoError.value = error instanceof Error ? error.message : 'Unable to generate product info.'
+  } finally {
+    generateLoading.value = false
   }
 }
 
@@ -310,22 +366,39 @@ onBeforeUnmount(() => {
 
   <div v-if="productInfoOpen" class="pm-backdrop" @click.self="closeProductInfoEditor">
     <section class="pm" role="dialog" aria-modal="true" aria-labelledby="pm-title">
-      <!-- Sheet header: Cancel · Title · Save -->
+      <!-- Header: Cancel · Title · AI + Save -->
       <header class="pm-head">
-        <button class="pm-bar" type="button" :disabled="productInfoSaving" @click="closeProductInfoEditor">Cancel</button>
+        <button class="pm-bar" type="button" :disabled="productInfoSaving || generateLoading" @click="closeProductInfoEditor">Cancel</button>
         <h2 id="pm-title">Product info</h2>
-        <button
-          class="pm-bar strong"
-          type="button"
-          :disabled="!form || productInfoLoading || productInfoSaving"
-          @click="saveProductInfo"
-        >{{ productInfoSaving ? 'Saving…' : 'Save' }}</button>
+        <div class="pm-right">
+          <button
+            class="pm-ai"
+            type="button"
+            title="Generate from a paragraph"
+            aria-label="Generate from a paragraph"
+            :aria-pressed="generateOpen"
+            :class="{ on: generateOpen }"
+            :disabled="productInfoLoading || generateLoading"
+            @click="toggleGenerate"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+              <path d="M12 2l1.9 5.6a3 3 0 0 0 1.9 1.9L21.4 11.4 15.8 13.3a3 3 0 0 0-1.9 1.9L12 20.8l-1.9-5.6a3 3 0 0 0-1.9-1.9L2.6 11.4l5.6-1.9a3 3 0 0 0 1.9-1.9L12 2z" />
+              <path d="M19 15l.8 2.2a1.5 1.5 0 0 0 1 1l2.2.8-2.2.8a1.5 1.5 0 0 0-1 1L19 23l-.8-2.2a1.5 1.5 0 0 0-1-1L15 19l2.2-.8a1.5 1.5 0 0 0 1-1L19 15z" opacity=".7" transform="translate(-3 -4) scale(.85)" />
+            </svg>
+          </button>
+          <button
+            class="pm-bar strong"
+            type="button"
+            :disabled="!form || productInfoLoading || productInfoSaving || generateLoading"
+            @click="saveProductInfo"
+          >{{ productInfoSaving ? 'Saving…' : 'Save' }}</button>
+        </div>
       </header>
 
       <p v-if="productInfoError" class="pm-msg err" role="alert">{{ productInfoError }}</p>
       <p v-else-if="productInfoStatus" class="pm-msg ok" role="status">{{ productInfoStatus }}</p>
 
-      <nav v-if="form" class="pm-tabs" role="tablist">
+      <nav v-if="form && !generateOpen" class="pm-tabs" role="tablist">
         <button
           v-for="t in TABS"
           :key="t.id"
@@ -340,6 +413,25 @@ onBeforeUnmount(() => {
       <div class="pm-body">
         <p v-if="productInfoLoading" class="pm-muted center">Loading…</p>
 
+        <!-- Generate -->
+        <div v-else-if="generateOpen" class="pm-gen">
+          <textarea
+            v-model="paragraph"
+            :disabled="generateLoading"
+            placeholder="Describe your product in a paragraph. Features, pricing, customers, anything you know."
+            aria-label="Product paragraph"
+          />
+          <button
+            class="pm-primary"
+            type="button"
+            :disabled="generateLoading || !paragraph.trim()"
+            @click="generateProductInfo"
+          >
+            <span v-if="generateLoading" class="pm-spin" aria-hidden="true"></span>
+            {{ generateLoading ? 'Generating…' : 'Generate' }}
+          </button>
+        </div>
+
         <template v-else-if="form">
           <!-- Overview -->
           <div v-show="tab === 'overview'" class="pm-pane">
@@ -351,10 +443,6 @@ onBeforeUnmount(() => {
               <label class="pm-cell">
                 <textarea v-model="form.description" rows="3" placeholder="Description" aria-label="Description" />
               </label>
-              <label class="pm-cell kv">
-                <span>Last verified</span>
-                <input v-model="form.last_verified" type="date" />
-              </label>
             </div>
 
             <section v-for="l in LISTS.overview" :key="l.key" class="pm-section">
@@ -364,9 +452,7 @@ onBeforeUnmount(() => {
                   <input v-model="form[l.key][i]" type="text" :aria-label="l.label" />
                   <button class="pm-rm" type="button" :aria-label="`Remove ${l.label}`" @click="removeAt(form[l.key], i)">×</button>
                 </div>
-                <button class="pm-cell pm-add" type="button" @click="addTo(form[l.key], '')">
-                  <i aria-hidden="true">+</i>{{ l.add }}
-                </button>
+                <button class="pm-cell pm-add" type="button" @click="addTo(form[l.key], '')">{{ l.add }}</button>
               </div>
             </section>
           </div>
@@ -375,21 +461,15 @@ onBeforeUnmount(() => {
           <div v-show="tab === 'features'" class="pm-pane">
             <div v-for="(f, i) in form.features" :key="i" class="pm-group">
               <div class="pm-cell">
-                <input v-model="f.name" type="text" placeholder="Feature name" aria-label="Feature name" />
+                <input v-model="f.name" type="text" placeholder="Feature" aria-label="Feature name" />
                 <button class="pm-rm" type="button" aria-label="Remove feature" @click="removeAt(form.features, i)">×</button>
               </div>
               <label class="pm-cell">
                 <textarea v-model="f.description" rows="2" placeholder="What it does" aria-label="Feature description" />
               </label>
-              <label class="pm-cell kv">
-                <span>Verified</span>
-                <input v-model="f.verified" class="pm-switch" type="checkbox" role="switch" />
-              </label>
             </div>
             <div class="pm-group">
-              <button class="pm-cell pm-add" type="button" @click="addTo(form.features, { name: '', description: '', verified: false })">
-                <i aria-hidden="true">+</i>Add feature
-              </button>
+              <button class="pm-cell pm-add" type="button" @click="addTo(form.features, { name: '', description: '' })">Add feature</button>
             </div>
           </div>
 
@@ -400,114 +480,84 @@ onBeforeUnmount(() => {
                 <span>Currency</span>
                 <input v-model="form.pricing.currency" type="text" maxlength="3" />
               </label>
-              <label class="pm-cell kv">
-                <span>Verified</span>
-                <input v-model="form.pricing.verified" class="pm-switch" type="checkbox" role="switch" />
-              </label>
             </div>
 
             <div v-for="(p, i) in form.pricing.plans" :key="i" class="pm-group">
               <div class="pm-cell">
-                <input v-model="p.name" type="text" placeholder="Plan name" aria-label="Plan name" />
+                <input v-model="p.name" type="text" placeholder="Plan" aria-label="Plan name" />
                 <button class="pm-rm" type="button" aria-label="Remove plan" @click="removeAt(form.pricing.plans, i)">×</button>
               </div>
-              <label class="pm-cell kv">
-                <span>Per user / month</span>
-                <input v-model.number="p.price_per_user_per_month" type="number" min="0" step="any" />
-              </label>
-              <label class="pm-cell kv">
-                <span>Billing</span>
-                <select v-model="p.billing_period">
-                  <option value="monthly">Monthly</option>
-                  <option value="annual">Annual</option>
+              <div class="pm-cell kv">
+                <span>Per user</span>
+                <input v-model.number="p.price_per_user_per_month" type="number" min="0" step="any" aria-label="Price per user per month" />
+                <select v-model="p.billing_period" aria-label="Billing period">
+                  <option value="monthly">/ month</option>
+                  <option value="annual">/ year</option>
                 </select>
-              </label>
-              <label class="pm-cell kv">
-                <span>Verified</span>
-                <input v-model="p.verified" class="pm-switch" type="checkbox" role="switch" />
-              </label>
+              </div>
             </div>
             <div class="pm-group">
               <button
                 class="pm-cell pm-add"
                 type="button"
-                @click="addTo(form.pricing.plans, { name: '', price_per_user_per_month: 0, billing_period: 'monthly', verified: false })"
-              ><i aria-hidden="true">+</i>Add plan</button>
+                @click="addTo(form.pricing.plans, { name: '', price_per_user_per_month: 0, billing_period: 'monthly' })"
+              >Add plan</button>
             </div>
 
-            <section class="pm-section">
-              <h3 class="pm-label">Discount policy</h3>
-              <div class="pm-group">
-                <label class="pm-cell">
-                  <textarea v-model="form.pricing.discount_policy" rows="2" aria-label="Discount policy" />
-                </label>
-              </div>
-            </section>
-          </div>
-
-          <!-- Integrations -->
-          <div v-show="tab === 'integrations'" class="pm-pane">
-            <div v-for="(f, i) in form.integrations" :key="i" class="pm-group">
-              <div class="pm-cell">
-                <input v-model="f.name" type="text" placeholder="Integration name" aria-label="Integration name" />
-                <button class="pm-rm" type="button" aria-label="Remove integration" @click="removeAt(form.integrations, i)">×</button>
-              </div>
-              <label class="pm-cell">
-                <textarea v-model="f.description" rows="2" placeholder="What it does" aria-label="Integration description" />
-              </label>
-              <label class="pm-cell kv">
-                <span>Verified</span>
-                <input v-model="f.verified" class="pm-switch" type="checkbox" role="switch" />
-              </label>
-            </div>
             <div class="pm-group">
-              <button class="pm-cell pm-add" type="button" @click="addTo(form.integrations, { name: '', description: '', verified: false })">
-                <i aria-hidden="true">+</i>Add integration
-              </button>
+              <label class="pm-cell">
+                <textarea v-model="form.pricing.discount_policy" rows="2" placeholder="Discount policy" aria-label="Discount policy" />
+              </label>
             </div>
           </div>
 
-          <!-- Rollout -->
-          <div v-show="tab === 'rollout'" class="pm-pane">
+          <!-- Setup: rollout + integrations -->
+          <div v-show="tab === 'setup'" class="pm-pane">
             <div class="pm-group">
               <label class="pm-cell">
-                <textarea v-model="form.implementation.process" rows="3" placeholder="Process" aria-label="Process" />
+                <textarea v-model="form.implementation.process" rows="3" placeholder="Rollout process" aria-label="Process" />
               </label>
               <label class="pm-cell kv">
                 <span>Timeline</span>
                 <input v-model="form.implementation.timeline" type="text" placeholder="e.g. 2–3 weeks" />
               </label>
-              <label class="pm-cell kv">
-                <span>Verified</span>
-                <input v-model="form.implementation.verified" class="pm-switch" type="checkbox" role="switch" />
-              </label>
             </div>
-          </div>
 
-          <!-- FAQ -->
-          <div v-show="tab === 'faq'" class="pm-pane">
-            <div v-for="(q, i) in form.faq" :key="i" class="pm-group">
-              <div class="pm-cell">
-                <input v-model="q.question" type="text" placeholder="Question" aria-label="Question" />
-                <button class="pm-rm" type="button" aria-label="Remove question" @click="removeAt(form.faq, i)">×</button>
+            <section class="pm-section">
+              <h3 class="pm-label">Integrations</h3>
+              <div v-for="(f, i) in form.integrations" :key="i" class="pm-group">
+                <div class="pm-cell">
+                  <input v-model="f.name" type="text" placeholder="Integration" aria-label="Integration name" />
+                  <button class="pm-rm" type="button" aria-label="Remove integration" @click="removeAt(form.integrations, i)">×</button>
+                </div>
+                <label class="pm-cell">
+                  <textarea v-model="f.description" rows="2" placeholder="What it does" aria-label="Integration description" />
+                </label>
               </div>
-              <label class="pm-cell">
-                <textarea v-model="q.answer" rows="2" placeholder="Answer" aria-label="Answer" />
-              </label>
-              <label class="pm-cell kv">
-                <span>Verified</span>
-                <input v-model="q.verified" class="pm-switch" type="checkbox" role="switch" />
-              </label>
-            </div>
-            <div class="pm-group">
-              <button class="pm-cell pm-add" type="button" @click="addTo(form.faq, { question: '', answer: '', verified: false })">
-                <i aria-hidden="true">+</i>Add question
-              </button>
-            </div>
+              <div class="pm-group">
+                <button class="pm-cell pm-add" type="button" @click="addTo(form.integrations, { name: '', description: '' })">Add integration</button>
+              </div>
+            </section>
           </div>
 
-          <!-- More -->
+          <!-- More: FAQ, security, limitations, competitors -->
           <div v-show="tab === 'more'" class="pm-pane">
+            <section class="pm-section">
+              <h3 class="pm-label">FAQ</h3>
+              <div v-for="(q, i) in form.faq" :key="i" class="pm-group">
+                <div class="pm-cell">
+                  <input v-model="q.question" type="text" placeholder="Question" aria-label="Question" />
+                  <button class="pm-rm" type="button" aria-label="Remove question" @click="removeAt(form.faq, i)">×</button>
+                </div>
+                <label class="pm-cell">
+                  <textarea v-model="q.answer" rows="2" placeholder="Answer" aria-label="Answer" />
+                </label>
+              </div>
+              <div class="pm-group">
+                <button class="pm-cell pm-add" type="button" @click="addTo(form.faq, { question: '', answer: '' })">Add question</button>
+              </div>
+            </section>
+
             <section v-for="l in LISTS.more" :key="l.key" class="pm-section">
               <h3 class="pm-label">{{ l.label }}</h3>
               <div class="pm-group">
@@ -515,9 +565,7 @@ onBeforeUnmount(() => {
                   <input v-model="form[l.key][i]" type="text" :aria-label="l.label" />
                   <button class="pm-rm" type="button" :aria-label="`Remove ${l.label}`" @click="removeAt(form[l.key], i)">×</button>
                 </div>
-                <button class="pm-cell pm-add" type="button" @click="addTo(form[l.key], '')">
-                  <i aria-hidden="true">+</i>{{ l.add }}
-                </button>
+                <button class="pm-cell pm-add" type="button" @click="addTo(form[l.key], '')">{{ l.add }}</button>
               </div>
             </section>
 
@@ -528,9 +576,7 @@ onBeforeUnmount(() => {
                   <input v-model="form.competitors[i]" type="text" aria-label="Competitor" />
                   <button class="pm-rm" type="button" aria-label="Remove competitor" @click="removeAt(form.competitors, i)">×</button>
                 </div>
-                <button class="pm-cell pm-add" type="button" @click="addTo(form.competitors, '')">
-                  <i aria-hidden="true">+</i>Add competitor
-                </button>
+                <button class="pm-cell pm-add" type="button" @click="addTo(form.competitors, '')">Add competitor</button>
               </div>
               <p v-else class="pm-muted note">Competitor details are kept as they are.</p>
             </section>
@@ -542,36 +588,43 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Keep the page surface black while the orb remains independently layered above it. */
+:global(html),
+:global(body),
+:global(#app) {
+  min-height: 100%;
+  margin: 0;
+  background: #000;
+}
+
 /* ---------- tokens (system colours, dark by default) ---------- */
 .pm {
   --sheet: rgba(28, 28, 30, 0.82);
-  --group: rgba(255, 255, 255, 0.07);
-  --press: rgba(255, 255, 255, 0.05);
-  --sep: rgba(255, 255, 255, 0.09);
-  --chip: rgba(255, 255, 255, 0.12);
+  --group: rgba(255, 255, 255, 0.05);
+  --press: rgba(255, 255, 255, 0.04);
+  --sep: rgba(255, 255, 255, 0.08);
+  --chip: rgba(255, 255, 255, 0.1);
   --text: #f5f5f7;
-  --text2: rgba(235, 235, 245, 0.6);
-  --text3: rgba(235, 235, 245, 0.3);
+  --text2: rgba(235, 235, 245, 0.55);
+  --text3: rgba(235, 235, 245, 0.28);
   --blue: #0a84ff;
   --red: #ff453a;
   --green: #30d158;
-  --track: rgba(120, 120, 128, 0.36);
 }
 
 @media (prefers-color-scheme: light) {
   .pm {
-    --sheet: rgba(246, 246, 248, 0.86);
-    --group: rgba(255, 255, 255, 0.92);
-    --press: rgba(60, 60, 67, 0.05);
-    --sep: rgba(60, 60, 67, 0.13);
-    --chip: rgba(120, 120, 128, 0.16);
+    --sheet: rgba(246, 246, 248, 0.88);
+    --group: rgba(255, 255, 255, 0.85);
+    --press: rgba(60, 60, 67, 0.04);
+    --sep: rgba(60, 60, 67, 0.12);
+    --chip: rgba(120, 120, 128, 0.14);
     --text: #1d1d1f;
-    --text2: rgba(60, 60, 67, 0.6);
-    --text3: rgba(60, 60, 67, 0.3);
+    --text2: rgba(60, 60, 67, 0.55);
+    --text3: rgba(60, 60, 67, 0.28);
     --blue: #007aff;
     --red: #ff3b30;
     --green: #34c759;
-    --track: rgba(120, 120, 128, 0.25);
   }
 }
 
@@ -589,8 +642,8 @@ onBeforeUnmount(() => {
 }
 
 .pm {
-  width: min(520px, 100%);
-  height: min(660px, 90vh);
+  width: min(480px, 100%);
+  height: min(620px, 90vh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -618,9 +671,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  padding: 14px 16px 10px;
+  padding: 14px 16px 8px;
 }
-.pm-head h2 { margin: 0; font-size: 1.03rem; font-weight: 600; letter-spacing: -0.01em; }
+.pm-head h2 { margin: 0; font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
+.pm-right { justify-self: end; display: flex; align-items: center; gap: 14px; }
 
 .pm-bar {
   justify-self: start;
@@ -632,55 +686,74 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   cursor: pointer;
 }
-.pm-bar.strong { justify-self: end; font-weight: 600; }
+.pm-bar.strong { font-weight: 600; }
 .pm-bar:disabled { opacity: 0.35; cursor: default; }
 .pm-bar:not(:disabled):active { opacity: 0.55; }
 
-.pm-msg { margin: 0; padding: 0 20px 8px; font-size: 0.8rem; text-align: center; }
+.pm-ai {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--blue);
+  background: none;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.pm-ai:hover { background: var(--chip); }
+.pm-ai.on { background: var(--chip); }
+.pm-ai:disabled { opacity: 0.35; cursor: default; }
+
+.pm-msg { margin: 0; padding: 0 20px 6px; font-size: 0.78rem; text-align: center; }
 .pm-msg.err { color: var(--red); }
 .pm-msg.ok { color: var(--green); }
 
 /* ---------- tabs ---------- */
 .pm-tabs {
   display: flex;
-  gap: 2px;
-  padding: 0 14px 10px;
+  justify-content: center;
+  gap: 18px;
+  padding: 0 16px;
+  border-bottom: 0.5px solid var(--sep);
   overflow-x: auto;
   scrollbar-width: none;
 }
 .pm-tabs::-webkit-scrollbar { display: none; }
 .pm-tabs button {
   flex: none;
-  padding: 5px 12px;
+  padding: 8px 0 9px;
   color: var(--text2);
   font: inherit;
-  font-size: 0.87rem;
-  font-weight: 500;
+  font-size: 0.85rem;
   background: none;
   border: 0;
-  border-radius: 999px;
+  border-bottom: 1.5px solid transparent;
+  margin-bottom: -0.5px;
   cursor: pointer;
-  transition: background 0.2s, color 0.2s;
+  transition: color 0.2s, border-color 0.2s;
 }
 .pm-tabs button:hover { color: var(--text); }
-.pm-tabs button.on { color: var(--text); background: var(--chip); }
+.pm-tabs button.on { color: var(--text); border-bottom-color: var(--text); }
 
 /* ---------- body ---------- */
-.pm-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 28px; }
-.pm-pane { display: flex; flex-direction: column; gap: 18px; }
+.pm-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 16px 24px; display: flex; flex-direction: column; }
+.pm-pane { display: flex; flex-direction: column; gap: 14px; }
 .pm-section { display: flex; flex-direction: column; gap: 6px; }
-.pm-label { margin: 0 0 0 14px; color: var(--text2); font-size: 0.8rem; font-weight: 400; }
+.pm-label { margin: 8px 0 0 4px; color: var(--text2); font-size: 0.75rem; font-weight: 500; letter-spacing: 0.02em; }
 .pm-muted { margin: 0; color: var(--text2); }
 .pm-muted.center { padding: 40px 0; text-align: center; }
-.pm-muted.note { margin-left: 14px; font-size: 0.85rem; }
+.pm-muted.note { margin-left: 4px; font-size: 0.85rem; }
 
-/* ---------- grouped lists ---------- */
+/* ---------- grouped rows ---------- */
 .pm-group {
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: var(--group);
-  border-radius: 12px;
+  border-radius: 10px;
 }
 
 .pm-cell {
@@ -688,7 +761,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 44px;
+  min-height: 42px;
   padding: 0 14px;
   margin: 0;
   color: inherit;
@@ -696,9 +769,7 @@ onBeforeUnmount(() => {
   text-align: left;
   background: none;
   border: 0;
-  transition: background 0.15s;
 }
-/* inset hairline between rows */
 .pm-cell + .pm-cell::before {
   content: '';
   position: absolute;
@@ -708,23 +779,21 @@ onBeforeUnmount(() => {
   height: 0.5px;
   background: var(--sep);
 }
-.pm-cell:focus-within { background: var(--press); }
 
 .pm-cell.kv { justify-content: space-between; }
-.pm-cell.kv > span { flex: none; }
+.pm-cell.kv > span { flex: none; color: var(--text2); }
 .pm-cell.kv input[type='text'],
 .pm-cell.kv input[type='number'],
-.pm-cell.kv input[type='date'],
-.pm-cell.kv select { width: auto; flex: 1; min-width: 0; text-align: right; color: var(--text2); }
+.pm-cell.kv select { width: auto; flex: 1; min-width: 0; text-align: right; }
+.pm-cell.kv select { flex: none; color: var(--text2); }
 
 .pm input[type='text'],
 .pm input[type='number'],
-.pm input[type='date'],
 .pm select,
 .pm textarea {
   box-sizing: border-box;
   width: 100%;
-  padding: 11px 0;
+  padding: 10px 0;
   color: var(--text);
   font: inherit;
   background: transparent;
@@ -732,66 +801,69 @@ onBeforeUnmount(() => {
   outline: none;
   color-scheme: dark light;
 }
-.pm select { appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 2px; }
+.pm select { appearance: none; -webkit-appearance: none; cursor: pointer; }
 .pm textarea { resize: none; line-height: 1.4; }
 .pm input::placeholder,
 .pm textarea::placeholder { color: var(--text3); }
-.pm input:focus-visible,
-.pm select:focus-visible,
-.pm textarea:focus-visible { color: var(--text); }
 
-/* ---------- actions ---------- */
+/* ---------- row actions ---------- */
 .pm-rm {
   flex: none;
-  display: grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  color: var(--text2);
-  font-size: 0.95rem;
+  padding: 0 2px;
+  color: var(--text3);
+  font-size: 1.1rem;
   line-height: 1;
-  background: var(--chip);
+  background: none;
   border: 0;
-  border-radius: 50%;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s;
+  transition: color 0.15s;
 }
-.pm-rm:hover { color: #fff; background: var(--red); }
+.pm-rm:hover { color: var(--red); }
 
-.pm-add { width: 100%; color: var(--blue); cursor: pointer; }
-.pm-add i { font-style: normal; font-size: 1.25rem; font-weight: 300; line-height: 1; }
+.pm-add { width: 100%; color: var(--blue); font-size: 0.9rem; cursor: pointer; }
 .pm-add:hover,
 .pm-add:focus-visible { background: var(--press); outline: none; }
 
-/* ---------- switch ---------- */
-.pm-switch {
+/* ---------- generate ---------- */
+.pm-gen { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.pm-gen textarea {
+  flex: 1;
+  min-height: 0;
+  padding: 14px;
+  background: var(--group);
+  border-radius: 10px;
+}
+.pm-gen textarea:disabled { opacity: 0.5; }
+
+.pm-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   flex: none;
-  appearance: none;
-  -webkit-appearance: none;
-  position: relative;
-  width: 42px !important;
-  height: 26px;
-  margin: 0;
-  padding: 0 !important;
-  background: var(--track) !important;
-  border-radius: 13px !important;
+  width: 100%;
+  min-height: 44px;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  background: var(--blue);
+  border: 0;
+  border-radius: 10px;
   cursor: pointer;
-  transition: background 0.22s;
 }
-.pm-switch::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 22px;
-  height: 22px;
-  background: #fff;
+.pm-primary:disabled { opacity: 0.4; cursor: default; }
+.pm-primary:not(:disabled):active { opacity: 0.8; }
+
+.pm-spin {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
   border-radius: 50%;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
-  transition: transform 0.22s cubic-bezier(0.3, 0.7, 0.3, 1);
+  animation: pm-spin 0.7s linear infinite;
 }
-.pm-switch:checked { background: var(--green) !important; }
-.pm-switch:checked::after { transform: translateX(16px); }
-.pm-switch:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+@keyframes pm-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .pm-spin { animation-duration: 1.6s; }
+}
 </style>
