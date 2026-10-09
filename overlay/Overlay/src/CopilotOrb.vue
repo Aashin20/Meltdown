@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import VoiceOrb from './VoiceOrb.vue'
-
+import SuggestionNotes from './SuggestionNotes.vue'
 const props = defineProps({
   url: { type: String, default: 'ws://localhost:8000/ws/elevenlabs' },
   options: { type: Object, default: () => ({}) },
@@ -14,6 +14,9 @@ const subtitle = ref('')
 const caption = ref('')
 const tone = ref('neutral')
 const priority = ref('none')
+const pendingSuggestions = ref({})
+const completedSuggestions = ref({})
+const sessionId = ref(0)
 
 // product info form
 const productInfoOpen = ref(false)
@@ -28,6 +31,8 @@ const tab = ref('overview')
 const generateOpen = ref(false)
 const generateLoading = ref(false)
 const paragraph = ref('')
+const reportLoading = ref(false)
+const reportError = ref('')
 
 let ws = null
 let hideTimer = 0
@@ -76,7 +81,18 @@ function handleResponse(r) {
   const ms = Math.min(Math.max(2500 + words * 400, 4500), 12000)
   show(r.suggestion, r.customer_intent || '', TONES[r.event_type] || 'neutral', r.priority || 'none', ms)
 }
-
+function syncSuggestions(r) {
+  if (Object.prototype.hasOwnProperty.call(r, 'pending_suggestions')) {
+    if (r.pending_suggestions && typeof r.pending_suggestions === 'object') {
+      pendingSuggestions.value = r.pending_suggestions
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(r, 'completed_suggestions')) {
+    if (r.completed_suggestions && typeof r.completed_suggestions === 'object') {
+      completedSuggestions.value = r.completed_suggestions
+    }
+  }
+}
 /* ---------- socket ---------- */
 // The backend's response envelope isn't known here, so accept the copilot JSON
 // either bare or nested under data / payload / result (object or JSON string).
@@ -112,6 +128,7 @@ function onMessage(ev) {
   const r = extractResponse(msg)
   if (!r) return
   emit('response', r)
+  syncSuggestions(r)
   handleResponse(r)
 }
 
@@ -131,6 +148,10 @@ function fail(cap, text) {
 }
 
 function startSession() {
+  active.value = true
+pendingSuggestions.value = {}
+completedSuggestions.value = {}
+sessionId.value++
   if (ws) return
   active.value = true
   clearTimeout(hideTimer)
@@ -327,11 +348,39 @@ async function generateProductInfo() {
   }
 }
 
+async function downloadReport() {
+  if (reportLoading.value) return
+  reportLoading.value = true
+  reportError.value = ''
+  try {
+    const response = await fetch(`${apiBaseUrl}/report`)
+    if (!response.ok) {
+      const detail = await response.text()
+      throw new Error(detail || `Unable to download report (${response.status}).`)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'sales_call_report.pdf'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    reportError.value = error instanceof Error ? error.message : 'Unable to download report.'
+    show('Report download failed', reportError.value, 'warm', 'high', 7000)
+  } finally {
+    reportLoading.value = false
+  }
+}
+
 /* ---------- orb events ---------- */
 function onSelect(id) {
   if (id === 'start') startSession()
   else if (id === 'stop') stopSession()
   else if (id === 'settings') openProductInfoEditor()
+  else if (id === 'pdf') downloadReport()
   else emit('select', id)
 }
 
@@ -363,7 +412,12 @@ onBeforeUnmount(() => {
     @select="onSelect"
     @update:state="onStateRequest"
   />
-
+<SuggestionNotes
+  :pending="pendingSuggestions"
+  :completed="completedSuggestions"
+  :reset-key="sessionId"
+  :infer-completed="false"
+/>
   <div v-if="productInfoOpen" class="pm-backdrop" @click.self="closeProductInfoEditor">
     <section class="pm" role="dialog" aria-modal="true" aria-labelledby="pm-title">
       <!-- Header: Cancel · Title · AI + Save -->
@@ -596,7 +650,13 @@ onBeforeUnmount(() => {
   margin: 0;
   background: #000;
 }
-
+:global(html),
+:global(body),
+:global(#app) {
+  min-height: 100%;
+  margin: 0;
+  background: #000;
+}
 /* ---------- tokens (system colours, dark by default) ---------- */
 .pm {
   --sheet: rgba(28, 28, 30, 0.82);
