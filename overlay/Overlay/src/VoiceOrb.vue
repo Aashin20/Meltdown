@@ -1,23 +1,3 @@
-<!--
-  VoiceOrb.vue — Vue 3 (<script setup>), no dependencies.
-
-  Props
-    state     'idle' | 'listening' | 'subtitle'   (use v-model:state)
-    subtitle  string shown beside the orb while state === 'subtitle'
-    level     0–1 microphone level; makes the orb react while listening
-    caption   small secondary line above the subtitle (e.g. the customer's intent)
-    tone      'neutral' | 'warm' | 'positive' | 'info'  — tints the orb
-    priority  'none' | 'low' | 'medium' | 'high'        — high makes the orb livelier
-    items     menu entries: [{ id, label, icon }]  icon: 'mic' | 'keyboard' | 'clock' | 'gear'
-
-  Events
-    update:state   the orb wants to change state (e.g. user chose "Talk")
-    select(id)     a menu item was chosen
-
-  Usage
-    <VoiceOrb v-model:state="state" :subtitle="reply" :level="micLevel" @select="onSelect" />
--->
-
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 
