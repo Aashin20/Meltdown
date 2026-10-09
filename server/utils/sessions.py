@@ -129,3 +129,74 @@ class AssistantSession:
             raise RuntimeError("The audio worker did not stop within 12 seconds.")
         self.worker = None
 
+
+class ElevenLabsAssistantSession(AssistantSession):
+    async def start(self, options: dict[str, Any]) -> None:
+        if self.running:
+            return
+
+        api_key = os.environ.get("ELEVEN_LABS_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "ELEVEN_LABS_API_KEY is not set. Add it to the environment before starting."
+            )
+
+        chunk_seconds = int(options.get("chunk_seconds", DEFAULT_CHUNK_SECONDS))
+        if chunk_seconds not in (1, 2, 3, 4):
+            raise ValueError("chunk_seconds must be between 1 and 4.")
+
+        microphone_name = options.get("mic")
+        speaker_name = options.get("speaker")
+        llm_model = str(options.get("llm_model", DEFAULT_LLM_MODEL))
+        output_path = Path(str(options.get("output", DEFAULT_OUTPUT)))
+        response_output_path = Path(
+            str(options.get("response_output", DEFAULT_RESPONSE_OUTPUT))
+        )
+        gemini_key = os.environ.get("GEMINI_API_KEY")
+        if not gemini_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY is not set. Add it to the environment before starting."
+            )
+
+        microphone, speaker, client, prompt = await asyncio.to_thread(
+            self._load_dependencies,
+            gemini_key,
+            microphone_name,
+            speaker_name,
+        )
+        self.stop_event.clear()
+        self.worker = threading.Thread(
+            target=transcribe_live_elevenlabs,
+            args=(
+                api_key,
+                microphone,
+                speaker,
+                output_path,
+                chunk_seconds,
+                options.get("language"),
+                client,
+                llm_model,
+                prompt,
+            ),
+            kwargs={
+                "on_gemini_response": self._publish_response,
+                "external_stop_event": self.stop_event,
+                "response_output_path": response_output_path,
+            },
+            name="elevenlabs-voice-assistant-session",
+            daemon=True,
+        )
+        self.worker.start()
+
+    @staticmethod
+    def _load_dependencies(
+        api_key: str,
+        microphone_name: str | None,
+        speaker_name: str | None,
+    ) -> tuple[Any, Any, genai.Client, str]:
+        return (
+            choose_microphone(microphone_name),
+            choose_speaker(speaker_name),
+            genai.Client(api_key=api_key),
+            load_base_prompt(),
+        )
