@@ -39,11 +39,18 @@ const icons = {
 
 const orbLabel = computed(() => {
   if (props.state === 'listening') return 'Listening. Press to stop.'
+  if (isSpeaking.value) return 'Assistant is responding'
   return open.value ? 'Close assistant menu' : 'Open assistant menu'
 })
-const showSubtitle = computed(() => props.state === 'subtitle' && props.subtitle.trim().length > 0)
+// 'responding' is the preferred name; 'subtitle' still works as an alias
+const isSpeaking = computed(() => props.state === 'responding' || props.state === 'subtitle')
+const showSubtitle = computed(() => isSpeaking.value && props.subtitle.trim().length > 0)
 
 function onOrbClick() {
+  clickT = 0
+  blinkT = 0
+  blinkDur = 0.42
+  nextBlink = 2.5 + Math.random() * 3.5
   if (props.state === 'listening') {
     open.value = false
     emit('update:state', 'idle')
@@ -78,182 +85,371 @@ watch(open, (v) => {
   if (v) nextTick(() => menuEl.value?.querySelector('button')?.focus({ preventScroll: true }))
 })
 
-/* ---------- orb rendering ---------- */
+// When a response starts or a new subtitle line appears, glance at the text, then back at the user
+watch(() => props.state, (v) => {
+  if (v === 'responding' || v === 'subtitle') { lookAtText = true; glanceT = 1.1 }
+})
+watch(() => props.subtitle, () => {
+  if (isSpeaking.value) { lookAtText = true; glanceT = 1.0 }
+})
+
+/* ---------- face rendering ---------- */
 const canvas = ref(null)
 const S = 128          // canvas size in CSS px (leaves room for the halo)
-const R = 36           // orb radius in CSS px
+const R = 36           // half-size of the face in CSS px
 const C = S / 2
 
 // Per-state targets. Everything eases toward these, so state changes feel fluid.
 const TARGETS = {
-  idle:      { speed: 0.55, amp: 0.07, glow: 0.65, scale: 1.0,  halo: 0.55 },
-  listening: { speed: 1.7,  amp: 0.14, glow: 1.0,  scale: 1.06, halo: 1.0 },
-  subtitle:  { speed: 1.05, amp: 0.10, glow: 0.85, scale: 1.02, halo: 0.8 },
+  idle:      { scale: 1.0,  halo: 0.55, wide: 1.0,  brow: 0.0 },
+  listening: { scale: 1.06, halo: 1.0,  wide: 1.1,  brow: 0.35 },
+  subtitle:  { scale: 1.02, halo: 0.8,  wide: 1.04, brow: 0.1 },
+  responding:{ scale: 1.02, halo: 0.8,  wide: 1.04, brow: 0.1 },
 }
 
-const BLOBS = [
-  { r: 0.62, orbit: 0.30, sp: 0.9,  seed: 0.0 },
-  { r: 0.66, orbit: 0.34, sp: -0.7, seed: 2.1 },
-  { r: 0.50, orbit: 0.38, sp: 1.1,  seed: 4.0 },
-  { r: 0.60, orbit: 0.26, sp: -1.0, seed: 5.3 },
-]
-
-// One colour per blob. The orb eases between palettes when `tone` changes.
-const PALETTES = {
-  neutral:  [[255, 70, 190], [70, 190, 255], [90, 255, 200], [140, 90, 255]],
-  warm:     [[255, 90, 70],  [255, 170, 60], [255, 70, 150], [200, 70, 255]],
-  positive: [[60, 230, 150], [70, 200, 255], [170, 255, 120], [40, 180, 170]],
-  info:     [[70, 170, 255], [100, 120, 255], [90, 230, 255], [170, 110, 255]],
+// Ring colour of the eyes per tone. The face eases between them when `tone` changes.
+const RINGS = {
+  neutral:  [60, 255, 150],
+  warm:     [255, 170, 70],
+  positive: [70, 235, 150],
+  info:     [90, 175, 255],
 }
 
 let ctx, raf = 0, last = 0, t = 0, dpr = 1, reduced = false, mq
-const cur = { ...TARGETS.idle, level: 0, colors: PALETTES.neutral.map((c) => [...c]) }
-
-function blobPath(cx, cy, r, time, seed, amp) {
-  const n = 56
-  ctx.beginPath()
-  for (let i = 0; i <= n; i++) {
-    const a = (i / n) * Math.PI * 2
-    const w =
-      Math.sin(a * 2 + time * 1.1 + seed) * 0.5 +
-      Math.sin(a * 3 - time * 0.8 + seed * 1.7) * 0.35 +
-      Math.sin(a * 5 + time * 1.6 + seed * 2.3) * 0.15
-    const rr = r * (1 + amp * 2.2 * w)
-    const x = cx + Math.cos(a) * rr
-    const y = cy + Math.sin(a) * rr
-    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)
-  }
-  ctx.closePath()
+const cur = {
+  scale: 1, halo: 0.55, wide: 1, brow: 0,
+  ring: [...RINGS.neutral],
+  gazeX: 0, gazeY: 0,
+  browLift: 0, browTilt: 0,
+  mouth: 0,
+  blink: 0,
+  grin: 0,
+  press: 0,
+  dilate: 1,    // pupil size multiplier
+  tilt: 0,      // head rotation (radians)
+  browUp: 0,    // extra lift on the right brow (curious look)
+  eyeGlow: 0.9, // eye ring glow multiplier
+  speech: 0,    // smoothed speech energy 0..1 (drives mouth, brows, glow, bob while responding)
+  bob: 0,       // tiny vertical nod while talking
 }
 
-function draw() {
-  const amp = cur.amp + cur.level * 0.18
-  const glow = cur.glow
-  const r0 = R * cur.scale * (1 + cur.level * 0.05)
+let nextBlink = 2.5, blinkT = -1
+let blinkDur = 0.18
+let nextGrin = 3, grinT = -1
+let clickT = -1
+
+// Responding: glance between the subtitle bubble (to the left) and the user
+let lookAtText = true
+let glanceT = 1.2
+
+// Fallback speech envelope used when no audio `level` is supplied while responding.
+// Syllable-rate flutter x word-level emphasis x phrase pauses.
+function simulatedSpeech(now) {
+  const syl = Math.abs(Math.sin(now / 118))
+  const word = 0.55 + 0.45 * Math.sin(now / 290 + 2)
+  const phrase = Math.sin(now / 1900) + 0.5 * Math.sin(now / 730)
+  const gate = Math.min(1, Math.max(0.08, (phrase + 1.1) * 2))
+  return syl * word * gate
+}
+
+// Sound ripples radiating from the face while listening
+const ripples = []
+let rippleCD = 0
+const RIPPLE_LIFE = 1.4
+
+// Pointer position in viewport px (null until the cursor moves)
+const pointer = { x: null, y: null }
+
+function onPointerMove(e) { pointer.x = e.clientX; pointer.y = e.clientY }
+function onPointerLeave() { pointer.x = null; pointer.y = null }
+
+function drawEye(ex, ey, er, ring, openness, glowMul) {
+  const [rr, rg, rb] = ring
+  const ringW = er * 0.3
+  ctx.save()
+  ctx.translate(ex, ey)
+  ctx.scale(1, Math.max(openness, 0.06)) // blink squashes the eye vertically
+
+  // Glowing ring (glow grows with voice level)
+  ctx.shadowColor = `rgba(${rr},${rg},${rb},0.9)`
+  ctx.shadowBlur = er * glowMul
+  ctx.strokeStyle = `rgb(${rr},${rg},${rb})`
+  ctx.lineWidth = ringW
+  ctx.beginPath()
+  ctx.arc(0, 0, er, 0, Math.PI * 2)
+  ctx.stroke()
+  ctx.shadowBlur = 0
+
+  // Dark gap between ring and eye white
+  ctx.fillStyle = '#05161a'
+  ctx.beginPath()
+  ctx.arc(0, 0, er - ringW / 2, 0, Math.PI * 2)
+  ctx.fill()
+
+  // Eye white
+  const whiteR = er - ringW * 0.95
+  ctx.fillStyle = '#f4fbff'
+  ctx.beginPath()
+  ctx.arc(0, 0, whiteR, 0, Math.PI * 2)
+  ctx.fill()
+
+  // Pupil follows the cursor (and dilates while listening)
+  const travel = whiteR * 0.38
+  const px = cur.gazeX * travel
+  const py = cur.gazeY * travel
+  const pr = whiteR * 0.62 * cur.dilate
+  ctx.fillStyle = '#050607'
+  ctx.beginPath()
+  ctx.arc(px, py, pr, 0, Math.PI * 2)
+  ctx.fill()
+
+  // Catch-light
+  ctx.fillStyle = 'rgba(255,255,255,0.9)'
+  ctx.beginPath()
+  ctx.arc(px - pr * 0.3, py - pr * 0.35, pr * 0.22, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
+function drawBrow(bx, by, w, tilt, curve) {
+  // tilt > 0 raises the outer end; curve arches the brow
+  ctx.beginPath()
+  ctx.moveTo(bx - w, by + tilt)
+  ctx.quadraticCurveTo(bx, by - curve, bx + w, by - tilt)
+  ctx.stroke()
+}
+
+function draw(now) {
+  const r0 = R * cur.scale
+  const ring = cur.ring.map(Math.round)
+  const [rr, rg, rb] = ring
 
   ctx.clearRect(0, 0, S, S)
 
-  // Soft halo outside the sphere
-  const halo = ctx.createRadialGradient(C, C, r0 * 0.9, C, C, r0 * 1.75)
-  halo.addColorStop(0, `rgba(110,150,255,${0.28 * cur.halo})`)
-  halo.addColorStop(1, 'rgba(110,150,255,0)')
-  ctx.fillStyle = halo
-  ctx.fillRect(0, 0, S, S)
-
-  ctx.save()
-  ctx.beginPath()
-  ctx.arc(C, C, r0, 0, Math.PI * 2)
-  ctx.clip()
-
-  // Dark glass body
-  const body = ctx.createRadialGradient(C - r0 * 0.3, C - r0 * 0.3, 0, C, C, r0)
-  body.addColorStop(0, '#1d1840')
-  body.addColorStop(1, '#05060f')
+  // Soft translucent white cloud: no clip, no rim, it just fades out.
+  // Many stops with eased alpha so there's no visible "ring" where it ends.
+  const fade = Math.min(r0 * 1.65, C - 1)
+  const body = ctx.createRadialGradient(C, C - r0 * 0.05, 0, C, C, fade)
+  body.addColorStop(0.00, 'rgba(255,255,255,0.80)')
+  body.addColorStop(0.30, 'rgba(255,255,255,0.68)')
+  body.addColorStop(0.50, 'rgba(250,253,255,0.46)')
+  body.addColorStop(0.70, 'rgba(246,251,252,0.22)')
+  body.addColorStop(0.85, 'rgba(244,250,251,0.07)')
+  body.addColorStop(1.00, 'rgba(244,250,251,0)')
   ctx.fillStyle = body
   ctx.fillRect(0, 0, S, S)
 
-  // Wiggly colour blobs, blended additively
-  ctx.globalCompositeOperation = 'lighter'
-  for (const [i, b] of BLOBS.entries()) {
-    const ox = Math.cos(t * b.sp + b.seed) * r0 * b.orbit
-    const oy = Math.sin(t * b.sp * 0.8 + b.seed) * r0 * b.orbit
-    const rad = r0 * b.r
-    const g = ctx.createRadialGradient(C + ox, C + oy, 0, C + ox, C + oy, rad * 1.15)
-    const [cr, cg, cb] = cur.colors[i]
-    g.addColorStop(0, `rgba(${cr},${cg},${cb},${0.85 * glow})`)
-    g.addColorStop(0.6, `rgba(${cr},${cg},${cb},${0.35 * glow})`)
-    g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`)
-    ctx.fillStyle = g
-    blobPath(C + ox, C + oy, rad, t, b.seed, amp)
-    ctx.fill()
-  }
+  // Tint from the eye colour so tone / listening changes read clearly
+  const glow = ctx.createRadialGradient(C, C, r0 * 0.4, C, C, fade)
+  glow.addColorStop(0, `rgba(${rr},${rg},${rb},0)`)
+  glow.addColorStop(0.6, `rgba(${rr},${rg},${rb},${0.18 * (cur.halo + cur.speech * 0.5)})`)
+  glow.addColorStop(1, `rgba(${rr},${rg},${rb},0)`)
+  ctx.fillStyle = glow
+  ctx.fillRect(0, 0, S, S)
 
-  // Two thin translucent shards, like light catching glass
-  for (let k = 0; k < 2; k++) {
-    const a = t * (k ? -0.35 : 0.28) + k * 2.4
-    const tip = r0 * (0.8 + Math.sin(t * 0.9 + k) * 0.08 * (1 + amp * 4))
-    const w = r0 * 0.1
-    ctx.save()
-    ctx.translate(C, C)
-    ctx.rotate(a)
+  // Sound ripples (drawn behind the face, unaffected by head tilt)
+  for (const rp of ripples) {
+    const p = rp.age / RIPPLE_LIFE
+    const eased = 1 - Math.pow(1 - p, 2)
+    ctx.strokeStyle = `rgba(${rr},${rg},${rb},${0.45 * rp.amp * (1 - p)})`
+    ctx.lineWidth = 2.5 * (1 - p) + 0.5
     ctx.beginPath()
-    ctx.moveTo(-r0 * 0.15, -w)
-    ctx.lineTo(tip, 0)
-    ctx.lineTo(-r0 * 0.15, w)
-    ctx.closePath()
-    const sg = ctx.createLinearGradient(0, 0, tip, 0)
-    sg.addColorStop(0, `rgba(255,255,255,${0.5 * glow})`)
-    sg.addColorStop(1, `rgba(255,120,220,${0.1 * glow})`)
-    ctx.fillStyle = sg
-    ctx.fill()
-    ctx.restore()
+    ctx.arc(C, C, r0 * (0.85 + 0.75 * eased), 0, Math.PI * 2)
+    ctx.stroke()
   }
 
-  // Bright core
-  const cx = C + Math.sin(t * 0.7) * r0 * 0.08
-  const cy = C + Math.cos(t * 0.6) * r0 * 0.08
-  const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, r0 * (0.5 + cur.level * 0.15))
-  core.addColorStop(0, `rgba(255,255,255,${0.95 * glow})`)
-  core.addColorStop(0.4, `rgba(200,225,255,${0.4 * glow})`)
-  core.addColorStop(1, 'rgba(200,225,255,0)')
-  ctx.fillStyle = core
-  ctx.fillRect(0, 0, S, S)
+  ctx.save()
+  ctx.translate(C, C)
+  ctx.rotate(cur.tilt)
+  ctx.translate(0, cur.bob * r0)
 
-  // Glass edge: darkening toward the rim
-  ctx.globalCompositeOperation = 'source-over'
-  const rim = ctx.createRadialGradient(C, C, r0 * 0.6, C, C, r0)
-  rim.addColorStop(0, 'rgba(0,0,0,0)')
-  rim.addColorStop(1, 'rgba(2,4,14,0.65)')
-  ctx.fillStyle = rim
-  ctx.fillRect(0, 0, S, S)
+  // Eyes
+  const eyeX = r0 * 0.36
+  const eyeY = -r0 * 0.06
+  const er = r0 * 0.25 * cur.wide
+  const openness = 1 - cur.blink
+  drawEye(-eyeX, eyeY, er, ring, openness, cur.eyeGlow)
+  drawEye(eyeX, eyeY, er, ring, openness, cur.eyeGlow)
 
-  // Specular highlight
-  const spec = ctx.createRadialGradient(C - r0 * 0.38, C - r0 * 0.5, 0, C - r0 * 0.38, C - r0 * 0.5, r0 * 0.5)
-  spec.addColorStop(0, 'rgba(255,255,255,0.28)')
-  spec.addColorStop(1, 'rgba(255,255,255,0)')
-  ctx.fillStyle = spec
-  ctx.fillRect(0, 0, S, S)
-  ctx.restore()
+  // Eyebrows
+  const calm = reduced ? 0 : 1
+  const wobbleL = Math.sin(now / 1900) * r0 * 0.03 * calm
+  const wobbleR = Math.sin(now / 2300 + 1.3) * r0 * 0.03 * calm
+  const baseY = eyeY - er - r0 * 0.2
+  const lift = cur.browLift * r0 * 0.16 + cur.brow * r0 * 0.08 + cur.grin * r0 * 0.03 - cur.press * r0 * 0.1
+  const browW = r0 * 0.2
+  ctx.strokeStyle = '#0b2228'
+  ctx.lineWidth = Math.max(2, r0 * 0.075)
+  ctx.lineCap = 'round'
+  drawBrow(-eyeX, baseY - lift + wobbleL, browW, cur.browTilt * r0 * 0.08 * -1 + wobbleL * 0.6, r0 * 0.07)
+  drawBrow(eyeX, baseY - lift - cur.browUp * r0 * 0.05 + wobbleR, browW, cur.browTilt * r0 * 0.08 + wobbleR * 0.6, r0 * 0.07)
 
-  // Hairline rim
-  const edge = ctx.createLinearGradient(C - r0, C - r0, C + r0, C + r0)
-  edge.addColorStop(0, 'rgba(255,255,255,0.45)')
-  edge.addColorStop(0.5, 'rgba(255,255,255,0.05)')
-  edge.addColorStop(1, 'rgba(120,220,255,0.35)')
-  ctx.strokeStyle = edge
-  ctx.lineWidth = 1
+  // Mouth: living smile
+  const mv = reduced ? 0 : 1
+  const mouthY = r0 * 0.4 + Math.sin(now / 1500) * r0 * 0.012 * mv
+  const m = cur.mouth
+  // mouth narrows slightly as it opens (rounder "o" shapes while talking)
+  const mw = r0 * (0.24 + 0.02 * Math.sin(now / 1700 + 0.5) * mv + cur.grin * 0.06) * (1 - Math.min(m, 0.6) * 0.3)
+  const smile = r0 * (0.12 + 0.025 * Math.sin(now / 1100) * mv + cur.grin * 0.07)
+  const cornerL = Math.sin(now / 1300) * r0 * 0.012 * mv
+  const cornerR = Math.cos(now / 1700) * r0 * 0.012 * mv
+  const sway = Math.sin(now / 2100) * r0 * 0.02 * mv
+  const yL = mouthY - smile * 0.4 + cornerL
+  const yR = mouthY - smile * 0.4 + cornerR
+
+  ctx.fillStyle = '#0b2228'
+  ctx.strokeStyle = '#0b2228'
+  ctx.lineWidth = Math.max(2, r0 * 0.07)
+  ctx.lineCap = 'round'
   ctx.beginPath()
-  ctx.arc(C, C, r0 - 0.5, 0, Math.PI * 2)
-  ctx.stroke()
+  ctx.moveTo(-mw, yL)
+  ctx.quadraticCurveTo(sway, (yL + yR) / 2 + smile * 2, mw, yR)
+  if (m > 0.03) {
+    ctx.quadraticCurveTo(sway, (yL + yR) / 2 + smile * 2 + m * r0 * 0.7, -mw, yL)
+    ctx.fill()
+  } else {
+    ctx.stroke()
+  }
+  ctx.restore()
 }
 
 function frame(now) {
   raf = requestAnimationFrame(frame)
   const dt = Math.min((now - last) / 1000 || 0, 0.05)
   last = now
+  t += dt
+
+  const listening = props.state === 'listening'
+  const speaking = props.state === 'responding' || props.state === 'subtitle'
+  const level = Math.min(Math.max(props.level, 0), 1)
+
+  // Speech energy while responding: real audio level if provided, otherwise simulated
+  let speechRaw = 0
+  if (speaking) speechRaw = level > 0.02 ? level : (reduced ? 0.3 : simulatedSpeech(now))
+  cur.speech += (speechRaw - cur.speech) * (1 - Math.exp(-dt * 12))
+  cur.bob = reduced ? 0 : cur.speech * Math.sin(now / 190) * 0.025
+
+  // Sound ripples: spawn while listening (faster when louder), always age out
+  if (listening && !reduced) {
+    rippleCD -= dt
+    if (rippleCD <= 0) {
+      ripples.push({ age: 0, amp: 0.5 + level * 0.5 })
+      rippleCD = 0.9 - level * 0.5
+    }
+  }
+  for (const rp of ripples) rp.age += dt
+  while (ripples.length && ripples[0].age > RIPPLE_LIFE) ripples.shift()
 
   const target = TARGETS[props.state] || TARGETS.idle
   const k = 1 - Math.exp(-dt * 4)
-  const boost = props.state === 'subtitle' ? { high: 0.05, medium: 0.025 }[props.priority] || 0 : 0
-  for (const key of ['speed', 'amp', 'glow', 'scale', 'halo']) {
-    cur[key] += ((key === 'amp' ? target.amp + boost : target[key]) - cur[key]) * k
-  }
-  const pal = PALETTES[props.tone] || PALETTES.neutral
-  const kc = 1 - Math.exp(-dt * 2.5)
-  cur.colors.forEach((c, i) => { for (let j = 0; j < 3; j++) c[j] += (pal[i][j] - c[j]) * kc })
+  for (const key of ['scale', 'halo', 'wide', 'brow']) cur[key] += (target[key] - cur[key]) * k
 
-  const lvlTarget = props.state === 'listening' ? Math.min(Math.max(props.level, 0), 1) : 0
-  cur.level += (lvlTarget - cur.level) * (1 - Math.exp(-dt * 12))
+  // Listening extras: dilated pupils, head tilt, curious brow, voice-reactive eye glow
+  cur.dilate += ((listening ? 1.18 : 1) - cur.dilate) * (1 - Math.exp(-dt * 6))
+  let tiltTarget = 0
+  if (listening) tiltTarget = 0.07 + (reduced ? 0 : Math.sin(t * 1.1) * 0.02) + level * 0.03
+  else if (speaking && !reduced) tiltTarget = Math.sin(t * 2.2) * 0.03 * (0.3 + cur.speech)  // rocks with the words
+  cur.tilt += (tiltTarget - cur.tilt) * (1 - Math.exp(-dt * 3))
+  // Brow: curious while listening, emphasis lifts on stressed syllables while responding
+  const browUpTarget = listening ? 1 : speaking ? cur.speech * 1.4 : 0
+  cur.browUp += (browUpTarget - cur.browUp) * (1 - Math.exp(-dt * (speaking ? 8 : 4)))
+  const glowTarget = 0.9 + (listening ? level * 1.6 : 0) + (speaking ? cur.speech * 1.3 : 0)
+  cur.eyeGlow += (glowTarget - cur.eyeGlow) * (1 - Math.exp(-dt * 10))
+
+  // Ring colour
+  const pal = RINGS[props.tone] || RINGS.neutral
+  const kc = 1 - Math.exp(-dt * 2.5)
+  for (let j = 0; j < 3; j++) cur.ring[j] += (pal[j] - cur.ring[j]) * kc
+
+  // Where is the cursor relative to the face?
+  let gx = 0, gy = 0, bx = 0, by = 0
+  if (listening) {
+    // Lock eyes on the user
+    gx = 0
+    gy = 0.05
+  } else if (speaking) {
+    // Glance at the subtitle bubble (sits to the left of the face), then back at the user
+    if (!reduced) {
+      glanceT -= dt
+      if (glanceT <= 0) {
+        lookAtText = !lookAtText
+        glanceT = lookAtText ? 1 + Math.random() * 1.2 : 1.8 + Math.random() * 2.2
+      }
+    }
+    gx = lookAtText && !reduced && showSubtitle.value ? -0.75 : 0
+    gy = lookAtText && !reduced && showSubtitle.value ? 0 : 0.05
+  } else if (pointer.x !== null && canvas.value) {
+    const rect = canvas.value.getBoundingClientRect()
+    const dx = pointer.x - (rect.left + rect.width / 2)
+    const dy = pointer.y - (rect.top + rect.height / 2)
+    const dist = Math.hypot(dx, dy) || 1
+    const pull = Math.min(dist / 140, 1)       // look fully sideways once the cursor is ~140px away
+    gx = (dx / dist) * pull
+    gy = (dy / dist) * pull
+    bx = Math.max(-1, Math.min(1, dx / 400))   // brows react to a wider range, and more gently
+    by = Math.max(-1, Math.min(1, dy / 400))
+  } else if (!reduced) {
+    // No cursor yet: glance around lazily
+    gx = Math.sin(t * 0.6) * 0.35
+    gy = Math.sin(t * 0.43 + 1) * 0.2
+  }
+
+  // Eyes snap quickly; eyebrows ease slowly
+  const kg = 1 - Math.exp(-dt * 14)
+  cur.gazeX += (gx - cur.gazeX) * kg
+  cur.gazeY += (gy - cur.gazeY) * kg
+  const kb = 1 - Math.exp(-dt * 1.1)
+  cur.browLift += (-by - cur.browLift) * kb    // cursor above => brows rise
+  cur.browTilt += (bx - cur.browTilt) * kb
+
+  // Blinking (attentive faces blink less)
+  if (!reduced) {
+    nextBlink -= dt
+    if (nextBlink <= 0 && blinkT < 0) {
+      blinkT = 0
+      blinkDur = 0.18
+      nextBlink = (listening ? 4 : 2.5) + Math.random() * 3.5
+    }
+  }
+  if (blinkT >= 0) {
+    blinkT += dt
+    const p = blinkT / blinkDur
+    // Eased so the eye stays closed a moment at the bottom of the blink
+    cur.blink = p < 1 ? Math.min(1, Math.sin(p * Math.PI) * (blinkDur > 0.3 ? 1.35 : 1)) : 0
+    if (p >= 1) blinkT = -1
+  }
+  // Occasional bigger smile
+  if (!reduced) {
+    nextGrin -= dt
+    if (nextGrin <= 0 && grinT < 0) { grinT = 0; nextGrin = 4 + Math.random() * 5 }
+  }
+  if (grinT >= 0) {
+    grinT += dt
+    const p = grinT / 1.4
+    cur.grin = p < 1 ? Math.sin(p * Math.PI) : 0
+    if (p >= 1) grinT = -1
+  }
+  if (clickT >= 0) {
+    clickT += dt
+    const p = clickT / 0.45
+    cur.press = p < 1 ? Math.sin(p * Math.PI) : 0
+    if (p >= 1) clickT = -1
+  }
+
+  // Mouth: nearly closed while listening (so it doesn't look like talking),
+  // flutters gently while a subtitle is shown
+  let mTarget = 0
+  if (listening) mTarget = 0.02 + level * 0.12
+  else if (speaking) mTarget = 0.04 + cur.speech * 0.5
+  cur.mouth += (Math.max(mTarget, 0) - cur.mouth) * (1 - Math.exp(-dt * 12))
 
   // "Breathing" while idle; a gentle pulse while a subtitle is shown
   let pulse = 0
   if (props.state === 'idle') pulse = Math.sin(now / 1400) * 0.015
-  if (props.state === 'subtitle') pulse = Math.sin(now / 380) * 0.02
-  const calm = reduced ? 0.15 : 1
-  t += dt * cur.speed * calm
+  if (speaking) pulse = (cur.speech - 0.3) * 0.025
   const saved = cur.scale
-  cur.scale += pulse * calm
-  draw()
+  cur.scale += pulse * (reduced ? 0.15 : 1)
+  draw(now)
   cur.scale = saved
 }
 
@@ -280,6 +476,8 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onVisibility)
   document.addEventListener('pointerdown', onDocPointer)
   document.addEventListener('keydown', onDocKey)
+  document.addEventListener('pointermove', onPointerMove, { passive: true })
+  document.documentElement.addEventListener('pointerleave', onPointerLeave)
   start()
 })
 
@@ -288,6 +486,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibility)
   document.removeEventListener('pointerdown', onDocPointer)
   document.removeEventListener('keydown', onDocKey)
+  document.removeEventListener('pointermove', onPointerMove)
+  document.documentElement.removeEventListener('pointerleave', onPointerLeave)
 })
 </script>
 
@@ -319,7 +519,7 @@ onBeforeUnmount(() => {
       </ul>
     </Transition>
 
-    <!-- Orb -->
+    <!-- Face -->
     <button
       ref="orbBtn"
       class="orb"
@@ -351,7 +551,7 @@ onBeforeUnmount(() => {
 
   position: fixed;
   right: max(20px, env(safe-area-inset-right));
-  bottom: max(20px, env(safe-area-inset-bottom));
+  bottom: max(32px, env(safe-area-inset-bottom));
   width: 72px;
   height: 72px;
   z-index: 1000;
@@ -373,7 +573,7 @@ onBeforeUnmount(() => {
   }
 }
 
-/* Orb button — canvas is larger than the button so the halo can bleed out */
+/* Face button — canvas is larger than the button so the halo can bleed out */
 .orb {
   position: absolute;
   inset: 0;
@@ -385,6 +585,7 @@ onBeforeUnmount(() => {
   -webkit-tap-highlight-color: transparent;
   transition: transform 0.35s var(--spring);
 }
+
 .orb canvas {
   position: absolute;
   left: 50%;
@@ -393,7 +594,7 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .orb:active { transform: scale(0.92); }
-.orb:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+.orb:focus-visible { outline: 3px solid var(--accent); outline-offset: -14px; }
 
 /* Shared translucent material (menu) */
 .material {
