@@ -4,6 +4,7 @@ import VoiceOrb from './VoiceOrb.vue'
 import SuggestionNotes from './SuggestionNotes.vue'
 const props = defineProps({
   url: { type: String, default: 'ws://localhost:8000/ws/elevenlabs' },
+  backendUrl: { type: String, default: 'http://localhost:8000' },
   options: { type: Object, default: () => ({}) },
 })
 const emit = defineEmits(['response', 'select'])
@@ -36,7 +37,10 @@ const reportError = ref('')
 
 let ws = null
 let hideTimer = 0
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const apiBaseUrl = computed(() => props.backendUrl || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000')
+const websocketUrl = computed(() => props.backendUrl
+  ? props.backendUrl.replace(/^http/, 'ws') + '/ws/elevenlabs'
+  : props.url)
 
 // event_type → orb colour
 const TONES = {
@@ -157,7 +161,7 @@ sessionId.value++
   clearTimeout(hideTimer)
   settle()
   try {
-    ws = new WebSocket(props.url)
+    ws = new WebSocket(websocketUrl.value)
   } catch (error) {
     fail('Can’t reach the assistant', error instanceof Error ? error.message : 'Invalid WebSocket URL.')
     return
@@ -212,10 +216,10 @@ function normalize(data) {
   d.target_customers ??= []
   d.features ??= []
   d.use_cases ??= []
-  d.pricing = { currency: 'USD', plans: [], discount_policy: '', ...(d.pricing || {}) }
+  d.pricing = { currency: 'USD', plans: [], discount_policy: '', ...d.pricing }
   d.pricing.plans ??= []
   d.integrations ??= []
-  d.implementation = { process: '', timeline: '', ...(d.implementation || {}) }
+  d.implementation = { process: '', timeline: '', ...d.implementation }
   d.security ??= []
   d.limitations ??= []
   d.faq ??= []
@@ -260,7 +264,7 @@ async function openProductInfoEditor() {
   form.value = null
 
   try {
-    const response = await fetch(`${apiBaseUrl}/product-info`)
+    const response = await fetch(`${apiBaseUrl.value}/product-info`)
     if (!response.ok) throw new Error(`Unable to load product info (${response.status}).`)
     form.value = normalize(await response.json())
   } catch (error) {
@@ -291,7 +295,7 @@ async function saveProductInfo() {
   productInfoError.value = ''
   productInfoStatus.value = ''
   try {
-    const response = await fetch(`${apiBaseUrl}/product-info`, {
+    const response = await fetch(`${apiBaseUrl.value}/product-info`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(cleanPayload()),
@@ -324,7 +328,7 @@ async function generateProductInfo() {
   productInfoError.value = ''
   productInfoStatus.value = ''
   try {
-    const response = await fetch(`${apiBaseUrl}/product-info/generate`, {
+    const response = await fetch(`${apiBaseUrl.value}/product-info/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ paragraph: text }),
@@ -353,7 +357,7 @@ async function downloadReport() {
   reportLoading.value = true
   reportError.value = ''
   try {
-    const response = await fetch(`${apiBaseUrl}/report`)
+    const response = await fetch(`${apiBaseUrl.value}/report`)
     if (!response.ok) {
       const detail = await response.text()
       throw new Error(detail || `Unable to download report (${response.status}).`)
@@ -642,21 +646,14 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* Keep the page surface black while the orb remains independently layered above it. */
 :global(html),
 :global(body),
 :global(#app) {
   min-height: 100%;
   margin: 0;
-  background: #000;
+  background: transparent;
 }
-:global(html),
-:global(body),
-:global(#app) {
-  min-height: 100%;
-  margin: 0;
-  background: #000;
-}
+:global(html:not(.desktop)) { background: #000; }
 /* ---------- tokens (system colours, dark by default) ---------- */
 .pm {
   --sheet: rgba(28, 28, 30, 0.82);
