@@ -31,3 +31,27 @@ async def send_responses(websocket: WebSocket, session: AssistantSession) -> Non
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
+
+@router.get("/product-info")
+async def get_product_info() -> dict[str, Any]:
+    return await asyncio.to_thread(load_product_info)
+
+
+@router.put("/product-info")
+async def update_product_info(
+    product_info: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    await asyncio.to_thread(save_product_info, product_info)
+    return product_info
+
+
+@router.post("/product-info/generate")
+async def generate_product_info_endpoint(
+    request: ProductInfoGenerationRequest,
+) -> dict[str, Any]:
+    try:
+        product_info = await asyncio.to_thread(generate_product_info, request.paragraph)
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return product_info
+
