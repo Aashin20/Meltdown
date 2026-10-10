@@ -65,3 +65,33 @@ def load_product_info() -> dict[str, Any]:
         raise RuntimeError("Product information must be a JSON object.")
     return product_info
 
+
+def save_product_info(product_info: dict[str, Any]) -> None:
+    """Atomically replace the product information JSON file."""
+    if not isinstance(product_info, dict):
+        raise ValueError("Product information must be a JSON object.")
+
+    with PRODUCT_INFO_LOCK:
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=PRODUCT_INFO_PATH.parent,
+                prefix=f"{PRODUCT_INFO_PATH.stem}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                json.dump(product_info, temporary_file, ensure_ascii=False, indent=2)
+                temporary_file.write("\n")
+                temporary_path = Path(temporary_file.name)
+            os.replace(temporary_path, PRODUCT_INFO_PATH)
+        except OSError as error:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except OSError:
+                    pass
+            raise RuntimeError(
+                f"Could not write product information '{PRODUCT_INFO_PATH}': {error}"
+            ) from error
