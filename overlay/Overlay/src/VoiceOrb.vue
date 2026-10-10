@@ -550,8 +550,8 @@ onBeforeUnmount(() => {
   --subtitle-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
 
   position: fixed;
-  right: max(20px, env(safe-area-inset-right));
-  bottom: max(32px, env(safe-area-inset-bottom));
+  right: max(28px, env(safe-area-inset-right));
+  bottom: max(40px, env(safe-area-inset-bottom));
   width: 72px;
   height: 72px;
   z-index: 1000;
