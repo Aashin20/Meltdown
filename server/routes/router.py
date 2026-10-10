@@ -55,3 +55,39 @@ async def generate_product_info_endpoint(
         raise HTTPException(status_code=502, detail=str(error)) from error
     return product_info
 
+
+@router.get("/report")
+async def download_report(background_tasks: BackgroundTasks) -> FileResponse:
+    """Generate the current call report and return it as a PDF download."""
+    temporary_file = tempfile.NamedTemporaryFile(
+        prefix="sales-call-report-",
+        suffix=".pdf",
+        delete=False,
+    )
+    output_path = temporary_file.name
+    temporary_file.close()
+
+    try:
+        await asyncio.to_thread(
+            generate_sales_call_report,
+            output_path=output_path,
+            save_json=False,
+        )
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
+        _remove_file(output_path)
+        raise HTTPException(status_code=502, detail=f"Unable to generate report: {error}") from error
+
+    background_tasks.add_task(_remove_file, output_path)
+    return FileResponse(
+        output_path,
+        media_type="application/pdf",
+        filename="sales_call_report.pdf",
+    )
+
+
+def _remove_file(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
