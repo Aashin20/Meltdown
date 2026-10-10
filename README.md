@@ -4,25 +4,20 @@ The official project submission repository for **DEFINE 4.0 — The World's Real
 
 ---
 
-# < Project Name >
+# Nudge
 
-<!-- Add your project cover image below -->
-
-![Project Cover](./assets/cover.png)
 
 ## Team Information
 
-- **Team Name**:
-- **Track**:
+- **Team Name**: Meltdown
+- **Track**: General
 
 ## Team Members
 
 | Name | Role | GitHub | LinkedIn |
 |------|------|--------|----------|
-| Full Name | Role | [@username](https://github.com/username) | [Profile](https://linkedin.com/in/username) |
-| Full Name | Role | [@username](https://github.com/username) | [Profile](https://linkedin.com/in/username) |
-| Full Name | Role | [@username](https://github.com/username) | [Profile](https://linkedin.com/in/username) |
-| Full Name | Role | [@username](https://github.com/username) | [Profile](https://linkedin.com/in/username) |
+| Aashin C Anil | Backend Dev | [@username](https://github.com/Aashin20) | [Profile](https://linkedin.com/in/aashin-c-anil/) |
+| Abia C Anil | Frontend Dev | [@username](https://github.com/abiacanil) | [Profile](https://linkedin.com/in/abiacanil) |
 
 ---
 
@@ -30,24 +25,16 @@ The official project submission repository for **DEFINE 4.0 — The World's Real
 
 ## Overview
 
-Write a concise 2–3 sentence summary of your project, what it does, and the primary problem it addresses.
+Nudge is a real-time AI sales assistant that listens to sales conversations, understands customer needs, and provides timely suggestions to help sales representatives respond confidently. Nudge helps salespeople avoid missed opportunities, handle objections, and make better decisions during conversations.
 
 ## Problem Statement
 
-Describe the problem your project aims to solve.
-
-Explain:
-
-- What is the problem?
-- Who is affected by it?
-- Why is solving it important?
-- What are the limitations of existing solutions?
+Sales representatives must simultaneously understand customer needs, handle objections, recall product information, and identify buying signals during fast-paced conversations. This cognitive overload can lead to missed opportunities, forgotten details, and inaccurate responses, affecting sales performance and customer trust. Existing tools primarily focus on recording conversations and analyzing them after they end, leaving representatives without timely, context-aware assistance when it matters most.
 
 ## Solution
 
-Explain your proposed solution and how it addresses the identified problem.
+A real-time assistant that transcribes live conversations, maintains evolving customer context, and provides concise, actionable suggestions. It detects objections, buying signals, and potential unsupported claims while automatically generating call summaries, commitments and follow-up actions. 
 
-Describe the core idea, workflow, and key technologies used to build the solution.
 
 ---
 
@@ -55,27 +42,22 @@ Describe the core idea, workflow, and key technologies used to build the solutio
 
 ### Demo Video
 
-[Watch Project Demo](https://www.youtube.com/watch?v=VIDEO_ID)
+[Watch Project Demo](https://drive.google.com/file/d/1wjRAmS9bh4ZBEh1v9AYsKsDWRjwsgV2H/view?usp=drive_link)
 
-> Replace `VIDEO_ID` with your YouTube video ID.
 
 ### Screenshots
 
 <!-- Add screenshots of your project here -->
 
-![Screenshot 1](./assets/screenshot-1.png)
+![Screenshot 1](./assets/ss1.png)
 
-![Screenshot 2](./assets/screenshot-2.png)
+![Screenshot 2](./assets/ss2.png)
 
-![Screenshot 3](./assets/screenshot-3.png)
-
----
-
-# Live Project
-
-[Visit Live Project](https://your-project-url.com/)
+![Screenshot 3](./assets/ss3.png)
 
 ---
+
+
 
 # Technical Implementation
 
@@ -83,13 +65,13 @@ Describe the core idea, workflow, and key technologies used to build the solutio
 
 | Category | Technologies |
 |----------|--------------|
-| **Frontend** | Technologies |
-| **Backend** | Technologies |
-| **Database** | Technologies |
-| **APIs / Services** | Technologies |
-| **AI / ML** | Technologies |
-| **DevOps / Deployment** | Technologies |
-| **Other Tools** | Technologies |
+| **Frontend** | Vue 3, Vite, Electron |
+| **Backend** | FastAPI, Uvicorn |
+| **Database** | SQLite |
+| **APIs / Services** |  Gemini, ElevenLabs  |
+| **AI / ML** | Faster-Whisper, sound-card audio capture, NumPy, Gemini LLM inference |
+| **DevOps / Deployment** | Electron packaging, Vite build pipeline, local desktop app deployment |
+| **Other Tools** | ReportLab |
 
 ## System Architecture
 
@@ -99,11 +81,11 @@ Describe the core idea, workflow, and key technologies used to build the solutio
 
 ## Key Features
 
-- Feature 1
-- Feature 2
-- Feature 3
-- Feature 4
-- Feature 5
+- Live Sales Suggestions
+- Automatic Summary document after the call
+- Live Notes
+- Mulitlingual support(90+ languages)
+- Rolling Context
 
 ---
 
@@ -111,15 +93,79 @@ Describe the core idea, workflow, and key technologies used to build the solutio
 
 ## Prerequisites
 
-Make sure the following are installed before running the project:
+Before running Meltdown, make sure you have the following installed:
 
-- Requirement 1
-- Requirement 2
-- Requirement 3
+- Python 3.11+
+- Node.js 22.18+ (or a compatible LTS version)
+- npm
+- Git
+- A working microphone and speaker setup for voice capture
 
 ## Installation
 
 ### 1. Clone the Repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Aashin20/Meltdown.git
+cd Meltdown
+```
+
+### 2. Create a Python Environment and Install Backend Dependencies
+
+```bash
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 3. Configure Environment Variables
+
+Create a `server/.env` file in the project root and add your API keys:
+
+```env
+GEMINI_API_KEY=your_gemini_api_key
+ELEVEN_LABS_API_KEY=your_elevenlabs_api_key
+MODEL=gemini-3.5-flash-lite
+```
+
+> If you do not have Gemini or ElevenLabs credentials yet, sign up for both services and add the generated keys before launching the app.
+
+### 4. Install Frontend Dependencies
+
+```bash
+cd overlay\Overlay
+npm install
+```
+
+## Running the Project
+
+### Option A: Run the Backend and Web Overlay Separately
+
+From the repository root, start the FastAPI backend:
+
+```bash
+.\.venv\Scripts\Activate.ps1
+uvicorn server.app:app --host 127.0.0.1 --port 8000 --reload
+```
+
+In a second terminal, start the Vue overlay app:
+
+```bash
+cd overlay\Overlay
+npm run dev
+```
+
+Then open the local Vite app in the browser and ensure the frontend is configured to call `http://127.0.0.1:8000`.
+
+### Option B: Run the Desktop App
+
+From the overlay folder:
+
+```bash
+cd overlay\Overlay
+npm run desktop:dev
+```
+
+This starts the Electron desktop overlay and automatically launches the backend when configured.
+
