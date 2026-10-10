@@ -1,0 +1,87 @@
+{
+  "name": "LeadFlow CRM",
+  "description": "A cloud-based CRM for small and medium-sized businesses to organize leads, track sales opportunities, and manage follow-ups.",
+  "target_customers": [
+    "Small and medium-sized businesses",
+    "Sales teams with 5-50 representatives",
+    "Businesses managing leads through spreadsheets"
+  ],
+  "features": [
+    {
+      "name": "Lead Management",
+      "description": "Store, organize, search, and track customer leads."
+    },
+    {
+      "name": "Sales Pipeline",
+      "description": "Track opportunities through customizable sales stages."
+    },
+    {
+      "name": "Automated Follow-up Reminders",
+      "description": "Create reminders for sales representatives to follow up with leads."
+    },
+    {
+      "name": "Sales Dashboard",
+      "description": "View lead counts, opportunity stages, and sales activity."
+
+    },
+    {
+      "name": "Team Collaboration",
+      "description": "Assign leads to representatives and view ownership."
+  
+    }
+  ],
+  "use_cases": [
+    "Replace spreadsheet-based lead tracking",
+    "Reduce missed sales follow-ups",
+    "Improve visibility into sales pipeline progress",
+    "Help sales managers monitor team activity"
+  ],
+  "pricing": {
+    "currency": "USD",
+    "plans": [
+      {
+        "name": "Starter",
+        "price_per_user_per_month": 15,
+        "billing_period": "monthly"
+      },
+      {
+        "name": "Professional",
+        "price_per_user_per_month": 29,
+        "billing_period": "monthly"
+      }
+    ],
+    "discount_policy": "No approved discount information available."
+  },
+  "integrations": [
+    {
+      "name": "CSV Import",
+      "description": "Import lead records from CSV files."
+    }
+  ],
+  "implementation": {
+    "process": "Create an account, import lead data, configure pipeline stages, and onboard the sales team.",
+    "timeline": ""
+  },
+  "security": [],
+  "limitations": [
+    "Native integrations beyond CSV import are not documented.",
+    "No implementation timeline is available.",
+    "No approved discount policy is available."
+  ],
+  "faq": [
+    {
+      "question": "Can we import leads from spreadsheets?",
+      "answer": "Yes. LeadFlow CRM supports importing lead records from CSV files."
+    },
+    {
+      "question": "Does it automatically send follow-up emails?",
+      "answer": "Automated follow-up reminders are supported, but automatic email sending is not documented."
+    },
+    {
+      "question": "How long does implementation take?",
+      "answer": "Less than 24 hours"
+    }
+  ],
+  "competitors": [],
+  "evidence": []
+}
