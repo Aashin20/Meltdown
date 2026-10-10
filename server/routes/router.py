@@ -91,3 +91,49 @@ def _remove_file(path: str) -> None:
     except FileNotFoundError:
         pass
 
+
+async def handle_websocket(
+    websocket: WebSocket,
+    session: AssistantSession,
+) -> None:
+    await websocket.accept()
+    response_sender = asyncio.create_task(send_responses(websocket, session))
+    try:
+        await websocket.send_json({"type": "ready"})
+        while True:
+            message = json.loads(await websocket.receive_text())
+            message_type = message.get("type")
+            if message_type == "start":
+                await session.start(message.get("options", {}))
+                await websocket.send_json({"type": "status", "status": "listening"})
+            elif message_type == "stop":
+                await session.stop()
+                await websocket.send_json({"type": "status", "status": "stopped"})
+            else:
+                await websocket.send_json(
+                    {"type": "error", "message": f"Unknown message type: {message_type}"}
+                )
+    except WebSocketDisconnect:
+        await session.stop()
+    except (ValueError, RuntimeError, json.JSONDecodeError) as error:
+        await websocket.send_json({"type": "error", "message": str(error)})
+    finally:
+        response_sender.cancel()
+        if session.running:
+            await session.stop()
+
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    await handle_websocket(
+        websocket,
+        AssistantSession(asyncio.get_running_loop()),
+    )
+
+
+@router.websocket("/ws/elevenlabs")
+async def elevenlabs_websocket_endpoint(websocket: WebSocket) -> None:
+    await handle_websocket(
+        websocket,
+        ElevenLabsAssistantSession(asyncio.get_running_loop()),
+    )
