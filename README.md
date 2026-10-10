@@ -16,8 +16,8 @@ The official project submission repository for **DEFINE 4.0 — The World's Real
 
 | Name | Role | GitHub | LinkedIn |
 |------|------|--------|----------|
-| Aashin C Anil | Backend Dev | [@username](https://github.com/Aashin20) | [Profile](https://linkedin.com/in/aashin-c-anil/) |
-| Abia C Anil | Frontend Dev | [@username](https://github.com/abiacanil) | [Profile](https://linkedin.com/in/abiacanil) |
+| Aashin C Anil | Backend Dev | [@Aashin20](https://github.com/Aashin20) | [Profile](https://linkedin.com/in/aashin-c-anil/) |
+| Abia C Anil | Frontend Dev | [@abiacanil](https://github.com/abiacanil) | [Profile](https://linkedin.com/in/abiacanil) |
 
 ---
 
